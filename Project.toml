@@ -1,0 +1,17 @@
+name = "GrassmannTensors"
+uuid = "3a8f9c10-1e5d-4b72-9c44-9f3a2b1c8d5e"
+authors = ["guochu"]
+version = "0.1.0"
+
+[deps]
+HadamardProduct = "6c01f027-8456-4d0c-9bda-5593334bb268"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MatrixAlgebraKit = "6c742aac-3347-4629-af66-fc926824e5e4"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Strided = "5e0ebb24-38b0-5f93-81fe-25c709ecae67"
+TensorOperations = "6aa20fa7-93e2-5fca-9bc0-fbd0db3c71a2"
+TupleTools = "9d95972d-f1c8-5527-a6e0-b4b365fa01f6"
+VectorInterface = "409d34a3-91d5-4945-b6ec-7529ddf182d8"
+
+[compat]
+julia = "1.10"
