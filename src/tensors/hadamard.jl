@@ -9,8 +9,19 @@
 #     ξ^a · ξ^b： 00 → 1（sector even），10/01 → ξ（sector odd，两块相加），
 #                 11 → 0（ξ²=0，直接丢弃）。
 #
-# 由于被丢弃的组合 (a,b)=(1,1) 恰是唯一会引入费米符号（R-symbol 中两个奇扇区
-# 交换）的情形，所有保留的贡献都无需额外的符号因子。融合的两个指标必须同空间
+# 符号处理与张量积逻辑一致（Eq. (B.5)-(B.6) 的 swapping signs）：先把 A、B 各自
+# permute 到 natural 序 (oA..., sh..., oB...) 中自己腿的位置，融合后再把结果 permute
+# 到 C 的指标序，每一段重排的费米符号都由 GT 的 `permute`（树级）机制给出：
+#
+#     sgn = σ_A · σ_B · σ_C
+#     σ_A = permute(fA₁, fA₂, p1_A, p2_A) 的符号（A 的腿重排到 natural 序）
+#     σ_B = permute(fB₁, fB₂, p1_B, p2_B) 的符号（B 的腿重排到 natural 序）
+#     σ_C = permute(fC₁, fC₂, p1_C, p2_C) 的符号（融合结果重排到 C 的指标序）
+#
+# 其中 p1_*/p2_* 是张量级 permute 参数：新 codomain（p1）/domain（p2）各腿的旧位置，
+# 按目标序排列。融合步骤本身不引入额外符号：被丢弃的组合 (a,b)=(1,1) 恰是唯一
+# R 符号为 -1 的共享扇区组合（两个奇 Grassmann 变量交换），所有保留组合的交叉
+# 费米符号恒为 +1。融合的两个指标必须同空间
 # 同向（同为 codomain 或同为 domain，由 `_check_hadamard_spaces` 保证）：空间
 # 必须严格相等，空间与其对偶空间也不匹配（不能是对偶指标）。
 # 逐点相乘要求共享腿两侧对应扇区的块维度对齐（PDF 中每个 Grassmann variable 的
@@ -295,7 +306,22 @@ function _hadamardproduct_kernel!(C::AbstractTensorMap,
         Bpos2nat[pB′[2][j]] = nO + nS + j
     end
 
+    # 符号因子（张量积逻辑，Eq. (B.5)-(B.6) 的 swapping signs）：σ_A·σ_B·σ_C。
+    # 每段重排都是把该张量的腿重排到 natural 序（σ_A/σ_B）或把融合结果（natural 序）
+    # 重排到 C 的指标序（σ_C），符号由树级 `permute` 机制给出（domain 逆序约定、
+    # 奇扇区交换 -1 均由它处理）。p1/p2 是张量级 permute 参数：新 codomain（p1）/
+    # domain（p2）各腿的旧位置，按目标序排列。
+    p1_A = Tuple(permA[t] for t in 1:(nO + nS) if permA[t] <= N₁A)
+    p2_A = Tuple(permA[t] for t in 1:(nO + nS) if permA[t] > N₁A)
+    p1_B = Tuple(permB[t] for t in 1:(nS + nB) if permB[t] <= N₁B)
+    p2_B = Tuple(permB[t] for t in 1:(nS + nB) if permB[t] > N₁B)
+    p1_C = Tuple(nat2C[n] for n in 1:N if nattype[n])
+    p2_C = Tuple(nat2C[n] for n in 1:N if !nattype[n])
+
     for (fC₁, fC₂) in C_struct.fusiontreelist
+        # σ_C 只依赖 C 的融合树（融合结果与 C 的扇区内容相同，仅位置不同），
+        # 与共享腿的 (a,b) 组合无关，提到组合循环外只算一次。
+        sgnC = only(permute(fC₁, fC₂, p1_C, p2_C))[2]
         # natural 位置 n 处 C 的 uncoupled sector（外积腿与共享腿均从 fC 读取）
         sectorC(n) = nat2C[n] <= N₁C ? fC₁.uncoupled[nat2C[n]] :
                                        fC₂.uncoupled[nat2C[n] - N₁C]
@@ -321,8 +347,11 @@ function _hadamardproduct_kernel!(C::AbstractTensorMap,
                                                 isdualB₁, isdualB₂, bs)
             iB == 0 && continue
 
+            # σ_A·σ_B·σ_C：A/B 重排到 natural 序、融合结果重排到 C 序的费米符号
+            sgn = only(permute(fA₁, fA₂, p1_A, p2_A))[2] *
+                  only(permute(fB₁, fB₂, p1_B, p2_B))[2] * sgnC
             _hadamard_block!(C[fC₁, fC₂], A′[fA₁, fA₂], B′[fB₁, fB₂],
-                             permA, permB, permC, nO, nS, nB, α)
+                             permA, permB, permC, nO, nS, nB, α * sgn)
         end
     end
     return C

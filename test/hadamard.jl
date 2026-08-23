@@ -360,6 +360,129 @@ import HadamardProduct as HD
         return C
     end
 
+    # ==========================================================================
+    # Test 9.5: 张量级独立参考（符号回归）——融合无符号 + GT 张量级 `permute`
+    # ==========================================================================
+    # 与 `hadamardproduct_ref`（块级标量循环）互补的独立执行路径，专门用于
+    # 验证符号：按张量积逻辑（Eq. (B.5)-(B.6)），hadamard 乘积的符号只来自
+    # "融合结果重排到 C 序"这一段，融合本身（共享腿逐点、外积腿外积）无符号：
+    #     C = permute(F, (p1, p2))
+    # 其中 F 是 natural 序 (oA..., sh..., oB...) 的融合结果按 codomain/domain
+    # 分组重排成合法 GT 张量序后的中间张量，p1/p2 是张量级 permute 参数（新
+    # codomain/domain 各腿在 F all-index 序中的旧位置）。符号由 GT 的 `permute`
+    # 机制自动给出，与主实现（树级 permute 三因子 σ_A·σ_B·σ_C）完全独立。
+    function ref_tensorlevel(A, pA, B, pB, pAB)
+        nO = GrassmannTensors._numout(pA)
+        nS = GrassmannTensors._numin(pA)
+        nB = GrassmannTensors._numin(pB)
+        N = nO + nS + nB
+        # natural 序腿类型
+        nattype = Vector{Bool}(undef, N)
+        natspace = Vector{GrassmannTensors.FermionicSpace}(undef, N)
+        for n in 1:N
+            T, i = GrassmannTensors._natural_leg(A, pA, B, pB, n)
+            nattype[n] = i <= numout(T)
+            natspace[n] = nattype[n] ? space(T, i) : dual(space(T, i))
+        end
+        # F 的 all-index 序 = (natural 中 codomain 腿..., natural 中 domain 腿...)
+        nat2F = Vector{Int}(undef, N)          # natural 位置 → F 的 all-index 位置
+        Fcod = [natspace[n] for n in 1:N if nattype[n]]
+        Fdom = [natspace[n] for n in 1:N if !nattype[n]]
+        c = 0
+        for n in 1:N
+            nattype[n] && (c += 1; nat2F[n] = c)
+        end
+        d = 0
+        for n in 1:N
+            !nattype[n] && (d += 1; nat2F[n] = length(Fcod) + d)
+        end
+        W = ProductSpace{length(Fcod)}(tuple(Fcod...)) ←
+            ProductSpace{length(Fdom)}(tuple(Fdom...))
+        F = GrassmannTensors.zerovector!(similar(A, eltype(A), W))
+        F_struct = GrassmannTensors.fusionblockstructure(F)
+        A_struct = GrassmannTensors.fusionblockstructure(A)
+        B_struct = GrassmannTensors.fusionblockstructure(B)
+        N₁F, N₂F = numout(F), numin(F)
+        N₁A, N₂A = numout(A), numin(A)
+        N₁B, N₂B = numout(B), numin(B)
+        isdualA₁ = map(isdual, codomain(A).spaces)
+        isdualA₂ = map(isdual, domain(A).spaces)
+        isdualB₁ = map(isdual, codomain(B).spaces)
+        isdualB₂ = map(isdual, domain(B).spaces)
+        shspaces = ntuple(k -> space(A, pA[2][k]), nS)
+        # 张量 all-index 位置 → natural 位置
+        Apos2nat = Vector{Int}(undef, numind(A))
+        for j in 1:nO; Apos2nat[pA[1][j]] = j; end
+        for k in 1:nS; Apos2nat[pA[2][k]] = nO + k; end
+        Bpos2nat = Vector{Int}(undef, numind(B))
+        for k in 1:nS; Bpos2nat[pB[1][k]] = nO + k; end
+        for j in 1:nB; Bpos2nat[pB[2][j]] = nO + nS + j; end
+        permA = HD.linearize(pA)
+        permB = HD.linearize(pB)
+        permF = ntuple(n -> nat2F[n], N)   # F 块 (natural 序) → (F all-index 序)
+        for (fF₁, fF₂) in F_struct.fusiontreelist
+            sectorF(m) = m <= N₁F ? fF₁.uncoupled[m] : fF₂.uncoupled[m - N₁F]
+            sectorNat(n) = sectorF(nat2F[n])
+            opts = ntuple(k -> GrassmannTensors._shared_ab_options(sectorNat(nO + k)), nS)
+            for combo in Iterators.product(opts...)
+                as = ntuple(k -> combo[k][1], nS)
+                bs = ntuple(k -> combo[k][2], nS)
+                sectorA(j) = begin
+                    n = Apos2nat[j]
+                    nO < n <= nO + nS ? as[n - nO] : sectorNat(n)
+                end
+                sectorB(j) = begin
+                    n = Bpos2nat[j]
+                    nO < n <= nO + nS ? bs[n - nO] : sectorNat(n)
+                end
+                uncA₁ = ntuple(j -> sectorA(j), N₁A)
+                uncA₂ = ntuple(j -> sectorA(N₁A + j), N₂A)
+                fA₁ = FusionTree(uncA₁, GrassmannTensors.couple(uncA₁), isdualA₁)
+                fA₂ = FusionTree(uncA₂, GrassmannTensors.couple(uncA₂), isdualA₂)
+                uncB₁ = ntuple(j -> sectorB(j), N₁B)
+                uncB₂ = ntuple(j -> sectorB(N₁B + j), N₂B)
+                fB₁ = FusionTree(uncB₁, GrassmannTensors.couple(uncB₁), isdualB₁)
+                fB₂ = FusionTree(uncB₂, GrassmannTensors.couple(uncB₂), isdualB₂)
+                iA = get(A_struct.fusiontreeindices, (fA₁, fA₂), 0)
+                iA == 0 && continue
+                iB = get(B_struct.fusiontreeindices, (fB₁, fB₂), 0)
+                iB == 0 && continue
+                # 融合（无符号）：A/B 块重排到 natural 序 (oA, sh) / (sh, oB)，
+                # 共享腿逐点、外积腿外积 → F 块
+                Ablk = permutedims(collect(A[fA₁, fA₂]), permA)
+                Bblk = permutedims(collect(B[fB₁, fB₂]), permB)
+                Fblk = permutedims(collect(F[fF₁, fF₂]), permF)
+                ΠoA = prod(size(Ablk, i) for i in 1:nO)
+                Πs = prod(size(Ablk, nO + i) for i in 1:nS)
+                ΠoB = prod(size(Bblk, nS + i) for i in 1:nB)
+                Am = reshape(Ablk, (ΠoA, Πs))
+                Bm = reshape(Bblk, (Πs, ΠoB))
+                Fm = reshape(Fblk, (ΠoA, Πs, ΠoB))
+                for i in 1:ΠoA, m in 1:Πs, k in 1:ΠoB
+                    Fm[i, m, k] += Am[i, m] * Bm[m, k]
+                end
+                F[fF₁, fF₂] .= permutedims(Fblk, invperm(permF))
+            end
+        end
+        # 张量级 permute 到 C 序（符号由 GT 机制给出）
+        N₁C = count(nattype)
+        Cpos2nat = Vector{Int}(undef, N)
+        codpos, dompos = 0, 0
+        for k in 1:N
+            n = HD.linearize(pAB)[k]
+            if nattype[n]
+                codpos += 1
+                Cpos2nat[codpos] = n
+            else
+                dompos += 1
+                Cpos2nat[N₁C + dompos] = n
+            end
+        end
+        p1 = Tuple(nat2F[Cpos2nat[cc]] for cc in 1:N₁C)
+        p2 = Tuple(nat2F[Cpos2nat[N₁C + cc]] for cc in 1:(N - N₁C))
+        return permute(F, (p1, p2))
+    end
+
     blocks_approx(C1, C2; rtol=1e-10, atol=1e-12) = begin
         space(C1) == space(C2) || return false
         for (f₁, f₂) in fusiontrees(C1)
@@ -407,17 +530,38 @@ import HadamardProduct as HD
         end
     end
 
-    @testset "ref cross-check: permuted outer order, small dims" begin
-        # 共享腿 l 在两侧必须同型同向：A/B 中 l 都是 domain 腿（primal 空间 Vd）。
+    @testset "sign cross-check vs tensor-level reference" begin
+        # 符号回归：主实现（树级 permute 三因子 σ_A·σ_B·σ_C）与张量级独立参考
+        # （无符号融合 + GT 张量级 permute）逐块对照。覆盖各类腿型/重排：
+        #   - domain 共享腿 + 外积序打乱（σ_C 非平凡）；
+        #   - codomain 共享腿 + 外积序打乱；
+        #   - B 带 domain 外积腿 + 外积序打乱；
+        #   - 多共享腿 + 外积序打乱；
+        #   - 奇 sector 多维度（(0,1)/(1,0) 两块逐点相加，验证块内逐点 + 符号）。
         Vd = FermionicSpace(0 => 1, 1 => 1)
-        for trial in 1:3
-            Ar = rand(ComplexF64, Vd ⊗ Vd, Vd)      # (i, k) ← (l)，共享 l：domain
-            Br = rand(ComplexF64, Vd, Vd ⊗ Vd)      # (m) ← (l, n)，共享 l：domain
-            pA, pB, pAB = HD.hadamard_indices((:i, :k, :l), (:m, :l, :n),
-                                              (:m, :i, :n, :k, :l))
-            C1r = hadamardproduct(Ar, pA, false, Br, pB, false, pAB)
-            C2r = hadamardproduct_ref(Ar, pA, Br, pB, pAB)
-            @test blocks_approx(C1r, C2r)
+        V2 = FermionicSpace(0 => 2, 1 => 2)
+        cases = (
+            # (tag, Ar, Br, IA, IB, IC)
+            ("domain shared + reorder", Vd ⊗ Vd, Vd, Vd, Vd ⊗ Vd,
+             (:i, :k, :l), (:m, :l, :n), (:m, :i, :n, :k, :l)),
+            ("codomain shared + reorder", Vd ⊗ Vd, one(Vd), Vd ⊗ Vd, one(Vd),
+             (:i, :j), (:j, :k), (:j, :k, :i)),
+            ("B with domain outer leg + reorder", Vd ⊗ Vd, one(Vd), Vd ⊗ Vd, Vd,
+             (:i, :j), (:j, :k, :n), (:k, :i, :n, :j)),
+            ("multi shared + reorder", Vd, Vd ⊗ Vd, Vd ⊗ Vd, Vd ⊗ Vd,
+             (:i, :k, :l), (:m, :n, :k, :l), (:n, :m, :k, :l, :i)),
+            ("multi-dim odd sector", V2 ⊗ V2, V2, V2, V2 ⊗ V2,
+             (:i, :k, :l), (:m, :l, :n), (:m, :i, :n, :k, :l)),
+        )
+        for (tag, Acod, Adom, Bcod, Bdom, IA, IB, IC) in cases
+            for trial in 1:3
+                Ar = rand(ComplexF64, Acod, Adom)
+                Br = rand(ComplexF64, Bcod, Bdom)
+                pA, pB, pAB = HD.hadamard_indices(IA, IB, IC)
+                C1r = hadamardproduct(Ar, pA, false, Br, pB, false, pAB)
+                C2r = ref_tensorlevel(Ar, pA, Br, pB, pAB)
+                @test blocks_approx(C1r, C2r)
+            end
         end
     end
 
