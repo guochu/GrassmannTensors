@@ -29,11 +29,21 @@ function fusiontrees(uncoupled::NTuple{0,FermionParity}, coupled::FermionParity)
     end
 end
 function fusiontrees(uncoupleds::Tuple, coupled::FermionParity)
-    trees = ((fusiontrees(uncoupled, coupled) for uncoupled in Iterators.product(uncoupleds...))...,)
-    return TupleTools.flatten(trees)
+    # 注意：不能用 `(gen...,)` 收集全部组合再 TupleTools.flatten——腿数 N 较大时
+    # （如 12 腿，2^N 个组合）嵌套元组过长，flatten 的类型推断会递归爆栈。
+    # 直接在 Iterators.product 上过滤，收集成 Vector，无递归。
+    N = length(uncoupleds)
+    trees = FusionTree{N}[]
+    for uncoupled in Iterators.product(uncoupleds...)
+        couple(uncoupled) == coupled && push!(trees, FusionTree(uncoupled, coupled))
+    end
+    return trees
 end
 function fusiontrees(uncoupleds::Tuple, coupled::FermionParity, isdualflags::Tuple)
-    trees = ((fusiontrees(uncoupled, coupled, isdualflags)
-              for uncoupled in Iterators.product(uncoupleds...))...,)
-    return TupleTools.flatten(trees)
+    N = length(uncoupleds)
+    trees = FusionTree{N}[]
+    for uncoupled in Iterators.product(uncoupleds...)
+        couple(uncoupled) == coupled && push!(trees, FusionTree(uncoupled, coupled, isdualflags))
+    end
+    return trees
 end

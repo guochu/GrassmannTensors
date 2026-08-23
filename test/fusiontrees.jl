@@ -199,4 +199,26 @@ using GrassmannTensors: split, couple, fusiontreetype, SectorMismatch
         t3 = randn(ComplexF64, W)
         @test sum(length(t3[f1, f2]) for (f1, f2) in fusiontrees(t3)) == dim(t3)
     end
+
+    @testset "many legs (regression: no flatten recursion)" begin
+        # 12 腿时空结构生成会枚举 2^12 个 sector 组合。早期实现先收集成嵌套元组再
+        # TupleTools.flatten，嵌套过深导致类型推断递归爆栈（Internal error: stack
+        # overflow in type inference）。回归测试：多腿张量可正常构建与遍历。
+        V = FermionicSpace(0 => 1, 1 => 1)
+        for N in (12, 16)
+            W = ProductSpace{N}(ntuple(_ -> V, N))
+            t = rand(ComplexF64, W, one(W))
+            # codomain 12 腿两个 sector 都有块，domain 空积只有 e，故张量总 sector 为 e
+            @test GrassmannTensors.dim(t) == 2^(N - 1)
+            @test length(GrassmannTensors.fusiontrees(t)) == 2^(N - 1)
+            @test GrassmannTensors.blockdim(W, e) == 2^(N - 1)
+            @test GrassmannTensors.blockdim(W, o) == 2^(N - 1)
+            @test GrassmannTensors.hasblock(W, e)
+            @test GrassmannTensors.hasblock(W, o)
+        end
+        # 求和运算在 12 腿张量上可用
+        W12 = ProductSpace{12}(ntuple(_ -> V, 12))
+        t = rand(ComplexF64, W12, one(W12))
+        @test t + t ≈ 2 * t
+    end
 end
