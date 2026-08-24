@@ -218,6 +218,98 @@ import HadamardProduct as HD
         end
     end
 
+    @testset "semicolon grouping follows TensorOperations/TensorKit" begin
+        # `;` 左侧 = codomain、右侧 = domain（与 TensorOperations/TensorKit 的 @tensor
+        # 约定一致）。domain 共享情形 A2: (i) ← (k)、B2: (j) ← (k)，自然输出
+        # (i, j) ← (k)；LHS 分号声明 `C[i, j; k]` 与之逐位一致，结果与无分号形式相同。
+        A2s = rand(ComplexF64, V, V)
+        B2s = rand(ComplexF64, V, V)
+        @hadamard Cs[i, j; k] := A2s[i, k] * B2s[j, k]
+        @test space(Cs) == (V ⊗ V ← V)
+        Cref = hadamardproduct(A2s, (:i, :k), B2s, (:j, :k))
+        @test space(Cref) == space(Cs)
+        for (f₁, f₂) in fusiontrees(Cs)
+            @test Cs[f₁, f₂] ≈ Cref[f₁, f₂]
+        end
+        # 全 codomain 情形：LHS 分号声明空 domain（`C[i, j, k;]`，pC 为空则退化为
+        # natural 序），结果与无分号形式一致。
+        A7s = rand(Float64, V ⊗ V, one(V))
+        B7s = rand(Float64, V ⊗ V, one(V))
+        @hadamard C7s[i, j, k;] := A7s[i, j] * B7s[j, k]
+        @test space(C7s) == (V ⊗ V ⊗ V ← one(V))
+        C7ref = hadamardproduct(A7s, (:i, :j), B7s, (:j, :k))
+        for (f₁, f₂) in fusiontrees(C7s)
+            @test C7s[f₁, f₂] ≈ C7ref[f₁, f₂]
+        end
+    end
+
+    @testset "semicolon grouping mismatch throws" begin
+        # 全 codomain 源张量（i, j, k 均为 codomain 腿），但 LHS `C[i; j k]` 把 j、k
+        # 声明为 domain：与继承类型矛盾（TensorKit 语义下属于类型错误），必须抛错。
+        A7 = rand(Float64, V ⊗ V, one(V))
+        B7 = rand(Float64, V ⊗ V, one(V))
+        @test_throws SpaceMismatch @hadamard C[i; j k] := A7[i, j] * B7[j, k]
+        # domain 共享情形：LHS 把自然 domain 腿 k 声明为 codomain，同样矛盾。
+        A2 = rand(ComplexF64, V, V)
+        B2 = rand(ComplexF64, V, V)
+        @test_throws SpaceMismatch @hadamard C[i, k; j] := A2[i, k] * B2[j, k]
+    end
+
+    @testset "RHS chain and parentheses" begin
+        # 全 codomain 链：A: (i,j)←()，B: (j,k)←()，C: (k,l)←()。共享腿 j、k 均为
+        # codomain。宏的逐对分解应与两步函数 API 完全一致。
+        Ach = rand(ComplexF64, V ⊗ V, one(V))
+        Bch = rand(ComplexF64, V ⊗ V, one(V))
+        Cch = rand(ComplexF64, V ⊗ V, one(V))
+        T1 = hadamardproduct(Ach, (:i, :j), Bch, (:j, :k))
+        @test space(T1) == (V ⊗ V ⊗ V ← one(V))
+        Dref = hadamardproduct(T1, (:i, :j, :k), Cch, (:k, :l))
+
+        # 链式（左结合）(A ⊙ B) ⊙ C
+        @hadamard D[i, j, k, l] := Ach[i, j] * Bch[j, k] * Cch[k, l]
+        @test space(D) == (V ⊗ V ⊗ V ⊗ V ← one(V))
+        for (f₁, f₂) in fusiontrees(D)
+            @test D[f₁, f₂] ≈ Dref[f₁, f₂]
+        end
+
+        # 括号分组：A ⊙ (B ⊙ C) 与 (A ⊙ B) ⊙ C 均等于链式结果（结合律，含符号）
+        @hadamard D2[i, j, k, l] := Ach[i, j] * (Bch[j, k] * Cch[k, l])
+        @hadamard D3[i, j, k, l] := (Ach[i, j] * Bch[j, k]) * Cch[k, l]
+        for (f₁, f₂) in fusiontrees(D)
+            @test D2[f₁, f₂] ≈ D[f₁, f₂]
+            @test D3[f₁, f₂] ≈ D[f₁, f₂]
+        end
+
+        # 链 + 输出指标重排（末步 σ_C 非平凡，验证宏对各步 pAB 的构造）
+        @hadamard D4[k, l, i, j] := Ach[i, j] * Bch[j, k] * Cch[k, l]
+        D4ref = hadamardproduct((:k, :l, :i, :j), T1, (:i, :j, :k), Cch, (:k, :l))
+        @test space(D4) == space(D4ref)
+        for (f₁, f₂) in fusiontrees(D4)
+            @test D4[f₁, f₂] ≈ D4ref[f₁, f₂]
+        end
+        # 括号 + 输出重排
+        @hadamard D5[k, l, i, j] := Ach[i, j] * (Bch[j, k] * Cch[k, l])
+        for (f₁, f₂) in fusiontrees(D4)
+            @test D5[f₁, f₂] ≈ D4[f₁, f₂]
+        end
+
+        # 链尾带 domain 外积腿：C: (k)←(l)，输出自然分组 (i,j,k)←(l)。
+        # LHS 分号声明 `Dc[i, j, k; l]` 与之逐位一致；无分号形式亦同。
+        Ccd = rand(ComplexF64, V, V)
+        Dcref = hadamardproduct(T1, (:i, :j, :k), Ccd, (:k, :l))
+        @hadamard Dc[i, j, k; l] := Ach[i, j] * Bch[j, k] * Ccd[k, l]
+        @test space(Dc) == (V ⊗ V ⊗ V ← V)
+        @test space(Dc) == space(Dcref)
+        for (f₁, f₂) in fusiontrees(Dc)
+            @test Dc[f₁, f₂] ≈ Dcref[f₁, f₂]
+        end
+        @hadamard Dc2[i, j, k, l] := Ach[i, j] * Bch[j, k] * Ccd[k, l]
+        @test space(Dc2) == (V ⊗ V ⊗ V ← V)
+        for (f₁, f₂) in fusiontrees(Dc2)
+            @test Dc2[f₁, f₂] ≈ Dcref[f₁, f₂]
+        end
+    end
+
     @testset "multi shared + outer (domain shared)" begin
         # A8: (i,j) ← (k,l)；B8: (m) ← (k,l)。共享 (k,l) 同为 domain；C 的腿 =
         # (i,j,m) cod, (k,l) dom

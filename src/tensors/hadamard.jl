@@ -95,18 +95,20 @@ end
 # Structure and type information
 #-------------------------------------------------------------------------------------------
 
-# 输出空间：natural 序 (oA..., sh..., oB...) 中每条腿继承源腿的 codomain/domain
-# 类型与空间，得到中间空间 D 后按 pAB 重排到 C 的索引序。
-# HD 的 pAB 契约：C 的第 k 个指标（all-index 序，codomain 在前）对应 natural 序的
-# 第 `linearize(pAB)[k]` 个指标；这与 GT 的 `select(W, p)` 语义不同，因此手动重排。
+# 输出空间（7/8 参数共用）：natural 序 (oA..., sh..., oB...) 中每条腿继承源腿的
+# codomain/domain 类型与空间，得到中间空间 D 后按 pAB 重排到 C 的索引序。
+# pC 是 `@hadamard` LHS 分号分组（(codomain 位置, domain 位置)，位置按 LHS 指标序 =
+# linearize(pAB) 序），遵循 TensorOperations/TensorKit 的 @tensor 约定：`;` 左侧 =
+# codomain、右侧 = domain。GT 下输出腿的类型由源腿继承，因此 pC 分组必须与继承类型
+# 一致，否则属于调用方类型错误（例如把 codomain 源腿声明为输出的 domain 腿），直接
+# 抛 SpaceMismatch（与 TensorKit 语义一致：对已有张量分号无效果、以对象实际结构为准，
+# 对新建输出则以分号声明的结构为准）。
 # 注意：HomSpace 的 domain 存的是 primal 空间（`W[i]` 会对 domain 腿再 dual 化），
 # 而 `space(t, i)` 对 domain 腿返回的是已 dual 化的空间，因此要 `dual` 回去。
-function HadamardProduct.hadamardproduct_structure(A::AbstractTensorMap, pA::Index2Tuple, conjA::Bool,
-                                                   B::AbstractTensorMap, pB::Index2Tuple, conjB::Bool,
-                                                   pAB::Index2Tuple)
-    A′, pA′ = _hadamardconj(A, pA, conjA)
-    B′, pB′ = _hadamardconj(B, pB, conjB)
-    _check_hadamard_spaces(A′, pA′, B′, pB′)
+# HD 的 pAB 契约：C 的第 k 个指标（all-index 序，codomain 在前）对应 natural 序的
+# 第 `linearize(pAB)[k]` 个指标；这与 GT 的 `select(W, p)` 语义不同，因此手动重排。
+function _hadamard_structure(A′, pA′::Index2Tuple, B′, pB′::Index2Tuple,
+                             pAB::Index2Tuple, pC::Union{Index2Tuple,Nothing})
     nO, nS, nB = _numout(pA′), _numin(pA′), _numin(pB′)
     N = nO + nS + nB
     # natural 序中每条腿的类型（codomain/domain）与空间（domain 存 primal）
@@ -122,9 +124,23 @@ function HadamardProduct.hadamardproduct_structure(A::AbstractTensorMap, pA::Ind
             natspace[n] = dual(space(T, i))
         end
     end
+    plin = linearize(pAB)
+    if pC !== nothing
+        # pC 的 codomain 组（位置按 LHS 指标序）必须与源腿继承的类型逐位一致
+        incod = falses(N)
+        for m in pC[1]
+            incod[m] = true
+        end
+        for k in 1:N
+            nattype[plin[k]] == incod[k] || throw(SpaceMismatch(
+                "left hand side semicolon grouping of the output is inconsistent with the " *
+                "index types inherited from the input tensors: output index at position $k " *
+                "(natural position $(plin[k])) is declared $(incod[k] ? "codomain" : "domain") " *
+                "but its source leg is $(nattype[plin[k]] ? "codomain" : "domain")"))
+        end
+    end
     codspaces = FermionicSpace[]
     domspaces = FermionicSpace[]
-    plin = linearize(pAB)
     for k in 1:N
         n = plin[k]
         if nattype[n]
@@ -138,12 +154,42 @@ function HadamardProduct.hadamardproduct_structure(A::AbstractTensorMap, pA::Ind
     return cod ← dom
 end
 
+function HadamardProduct.hadamardproduct_structure(A::AbstractTensorMap, pA::Index2Tuple, conjA::Bool,
+                                                   B::AbstractTensorMap, pB::Index2Tuple, conjB::Bool,
+                                                   pAB::Index2Tuple)
+    A′, pA′ = _hadamardconj(A, pA, conjA)
+    B′, pB′ = _hadamardconj(B, pB, conjB)
+    _check_hadamard_spaces(A′, pA′, B′, pB′)
+    return _hadamard_structure(A′, pA′, B′, pB′, pAB, nothing)
+end
+
+# 8 参版本：`@hadamard` 的 LHS 使用分号（如 `C[i; j k] := ...`）时由
+# `tensoralloc_hadamard` 转发 pC，输出的 codomain/domain 分组以分号声明为准。
+function HadamardProduct.hadamardproduct_structure(A::AbstractTensorMap, pA::Index2Tuple, conjA::Bool,
+                                                   B::AbstractTensorMap, pB::Index2Tuple, conjB::Bool,
+                                                   pAB::Index2Tuple, pC::Index2Tuple)
+    A′, pA′ = _hadamardconj(A, pA, conjA)
+    B′, pB′ = _hadamardconj(B, pB, conjB)
+    _check_hadamard_spaces(A′, pA′, B′, pB′)
+    return _hadamard_structure(A′, pA′, B′, pB′, pAB, pC)
+end
+
 # 输出张量类型：codomain/domain 划分不能从 pAB（标签 API 把全部指标放入 pAB[1]）
 # 推断，只能由 `hadamardproduct_structure` 中 natural 序腿的类型决定。
 function HadamardProduct.hadamardproduct_type(TC, A::AbstractTensorMap, pA::Index2Tuple, conjA::Bool,
                                               B::AbstractTensorMap, pB::Index2Tuple, conjB::Bool,
                                               pAB::Index2Tuple)
     structure = HadamardProduct.hadamardproduct_structure(A, pA, conjA, B, pB, conjB, pAB)
+    N₁, N₂ = numout(structure), numin(structure)
+    M = similarstoragetype(A, TC)
+    return tensormaptype(N₁, N₂, M)
+end
+
+# 8 参版本：`@hadamard` 的 LHS 使用分号时，codomain/domain 划分以分号声明为准。
+function HadamardProduct.hadamardproduct_type(TC, A::AbstractTensorMap, pA::Index2Tuple, conjA::Bool,
+                                              B::AbstractTensorMap, pB::Index2Tuple, conjB::Bool,
+                                              pAB::Index2Tuple, pC::Index2Tuple)
+    structure = HadamardProduct.hadamardproduct_structure(A, pA, conjA, B, pB, conjB, pAB, pC)
     N₁, N₂ = numout(structure), numin(structure)
     M = similarstoragetype(A, TC)
     return tensormaptype(N₁, N₂, M)
