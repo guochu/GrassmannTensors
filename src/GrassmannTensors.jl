@@ -66,7 +66,6 @@ export notrunc, truncerr, truncdim, truncspace, truncbelow, truncdimcutoff
 # Imports
 #---------
 using TupleTools
-using TupleTools: StaticLength
 
 using Strided
 
@@ -96,7 +95,7 @@ using LinearAlgebra: norm, dot, normalize, normalize!, tr,
                      eigen, eigen!, svd, svd!,
                      isposdef, isposdef!, ishermitian, rank, cond,
                      Diagonal, Hermitian
-using LinearAlgebra: LAPACK, triu!, BlasFloat, BlasReal, BlasComplex, checksquare
+using LinearAlgebra: LAPACK, BlasFloat
 
 
 using Random: Random, rand!, randn!
